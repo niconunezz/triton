@@ -1,0 +1,8 @@
+4070 SUPER Ti:
+    -672.3 GB/s bandwith
+    -44.10 TFLOPS f32 compute
+
+total FLOPS = 2*4092**3 + 4092**2 = 137 GFLOPS
+minimum data to read = 3* 4092**2 * 4B = 201MB
+total data to store =  4092**2 * 4B = 67MB
+
