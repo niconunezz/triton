@@ -13,9 +13,9 @@ def sgemm_naive(A, B, C, alpha, beta,
                 M:tl.constexpr, N:tl.constexpr, K:tl.constexpr
                 ):
     
-
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+    pid = tl.program_id(0)
+    pid_m = pid // tl.cdiv(N, Bc)
+    pid_n = pid % tl.cdiv(N, Bc)
 
     off_m = tl.arange(0, Br)
     off_k = tl.arange(0, Bk)
@@ -62,7 +62,7 @@ def kernel(A, B, C, alpha, beta):
     M, N = C.shape
     M, K = A.shape
     
-    sgemm_naive[(triton.cdiv(M,Br), triton.cdiv(N, Bc), 1)](A, B, C, alpha, beta, 
+    sgemm_naive[(triton.cdiv(M,Br) * triton.cdiv(N, Bc), 1)](A, B, C, alpha, beta, 
                                                    Br, Bc, Bk,
                                                    A.stride(0), A.stride(1),
                                                    B.stride(0), B.stride(1),
