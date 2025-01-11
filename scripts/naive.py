@@ -1,8 +1,8 @@
 import triton
 import torch
 import triton.language as tl
-import time
 import random
+
 
 @triton.jit
 def sgemm_naive(A, B, C, alpha, beta,
@@ -14,8 +14,8 @@ def sgemm_naive(A, B, C, alpha, beta,
                 ):
     
     pid = tl.program_id(0)
-    pid_m = pid // tl.cdiv(N, Bc)
-    pid_n = pid % tl.cdiv(N, Bc)
+    pid_m = pid % tl.cdiv(N, Bc)
+    pid_n = pid // tl.cdiv(N, Bc)
 
     off_m = tl.arange(0, Br)
     off_k = tl.arange(0, Bk)
@@ -58,17 +58,17 @@ def sgemm_naive(A, B, C, alpha, beta,
 
 
 def kernel(A, B, C, alpha, beta):
-    Br = Bk = Bc = 32
+    Br = Bk = Bc = 64
+    
     M, N = C.shape
     M, K = A.shape
-    
+
     sgemm_naive[(triton.cdiv(M,Br) * triton.cdiv(N, Bc), 1)](A, B, C, alpha, beta, 
                                                    Br, Bc, Bk,
                                                    A.stride(0), A.stride(1),
                                                    B.stride(0), B.stride(1),
                                                    C.stride(0), C.stride(1),
-                                                   M, N, K)
-
+                                                   M, N, K, num_warps = 4, num_stages = 2)
     
     return C
 
@@ -83,7 +83,7 @@ def normal_impl(A, B, C, alpha, beta):
 
 def test():
     torch.manual_seed(20)
-    M, K, N = 4092,4092,4092
+    M = K = N = 4092
     device = 'cuda:0'
     dtype = torch.float32
     A = torch.randn(size = (M, K), device=device, dtype=dtype)
@@ -94,18 +94,54 @@ def test():
     alpha = random.random()
 
     ref_out = normal_impl(A, B, C, alpha, beta)
-
-    t0 = time.monotonic()
     tr_out = kernel(A, B, C, alpha, beta)
-    t1 = time.monotonic()
-    tme = t1-t0
-    gflops = 137/tme
-    print(f"time taken: {(tme*1000):.2f} ms")
-    print(f"GFLOPS/s: {(gflops):.2f}")
-    print(f"Performance relative to cuBLAS: {(gflops*100/23249.6):.1f}%")
+
     print(f"correct: {torch.allclose(ref_out, tr_out, atol = 1e-2, rtol=0)}")
     print(f"dist: {torch.dist(ref_out, tr_out):.10f} | max dist : {(torch.max(torch.abs(ref_out - tr_out))):.10f}")
     
 
+@triton.testing.perf_report(
+        triton.testing.Benchmark(
+            x_names=['N'],
+            x_vals=[(32*i) for i in range(30, 51)],
+            line_arg='provider',
+            line_vals=['triton', 'torch'],
+            line_names= ['Triton', 'Torch'],
+            styles=[('blue', '-'), ('green', '-')],
+            ylabel='GB/s',
+            plot_name='perf',
+            args = {}
+    
+        )
+)
+
+def benchmark(N, provider):
+    torch.manual_seed(20)
+
+    M = K = N 
+    device = torch.device('cuda:0')
+    dtype = torch.float32
+    A = torch.randn(size = (M, K), device=device, dtype=dtype)
+    B = torch.randn(size = (K, N), device=device, dtype=dtype)
+    C = torch.randn(size = (M, N), device=device, dtype=dtype)
+    random.seed(20)
+    beta = random.random()
+    alpha = random.random()
+    stream = getattr(torch, device.type).Stream()
+    getattr(torch, device.type).set_stream(stream)
+
+    if provider == 'torch':
+        ms = triton.testing.do_bench(lambda: normal_impl(A,B,C, alpha, beta))
+    
+    if provider == 'triton':
+        ms = triton.testing.do_bench(lambda: kernel(A,B,C, alpha, beta))
+         
+
+    gbps = lambda ms: ((2*N**3 + N**2)/1e9)/ (ms*1e-3)
+
+    return gbps(ms)
+
 if __name__ == "__main__":
+    benchmark.run(show_plots=False, print_data=True)
+
     test()
