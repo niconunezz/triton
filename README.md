@@ -1,4 +1,4 @@
 # triton
 
-![](assets/triton.webp)
+![](assets/triton.jpg)
 Just a collection of triton kernels.
