@@ -21,8 +21,6 @@ from triton.runtime import driver
 )
 
 
-
-
 @triton.jit
 def persistent(A, B, C,
                am_stride,
@@ -46,7 +44,6 @@ def persistent(A, B, C,
     TILES_PER_SM = tl.cdiv(TOTAL_TILES,NUM_SM)
     accumulator = tl.zeros([Br, Bc], dtype = tl.float32)
 
-    
     pid_m, pid_n = 0, 0
     m_off = tl.arange(0, Br)
     n_off = tl.arange(0, Bc)
@@ -74,15 +71,21 @@ def persistent(A, B, C,
 
         off_a += Bk*(i%K_BLOCKS)
         off_b += Bk*bk_stride*(i%K_BLOCKS)
-
-        a = tl.load(A + off_a, mask = k_off[None, :] < K - ki*Bk, other=0)
-        b = tl.load(B + off_b, mask = k_off[:, None] < K - ki*Bk, other=0)
+        
+        a = tl.load(A + off_a, mask = k_off[None, :] < K - ki*Bk, other=0.0)
+        b = tl.load(B + off_b, mask = k_off[:, None] < K - ki*Bk, other=0.0)
 
         accumulator = tl.dot(a, b, accumulator, allow_tf32=False)
 
 
         if ki == K_BLOCKS-1:
-            c = accumulator.to(tl.float16)
+            if C.dtype.element_ty == tl.float8e4nv:
+                c = accumulator.to(tl.float8e4nv)
+            elif C.dtype.element_ty == tl.float8e5:
+                c = accumulator.to(tl.float8e5)
+            else:
+                c = accumulator.to(tl.float16)
+            
             cm_off = (pid_m*Br + m_off)*cm_stride
             cn_off = pid_n*Bc + n_off
             offset = cm_off[:,None] + cn_off[None, :]
@@ -96,36 +99,41 @@ def matmul_kernel(A, B, C, NUM_SM):
     M,K = A.shape
     K,N = B.shape
     
-    
-    GROUP_SZE = 8
     grid = lambda META: (min(NUM_SM, triton.cdiv(M,META['Br']) * triton.cdiv(N, META['Bc'])), )
     persistent[grid](A, B, C,
-                           A.stride(0),
-                           B.stride(0),
-                           C.stride(0),
-                           NUM_SM,
-                           M, N, K)
+                     A.stride(0),
+                     B.stride(0),
+                     C.stride(0),
+                     NUM_SM,
+                     M, N, K)
     
     return C
     
 def test():
-    M = N = K = 4096
     torch.manual_seed(20)
     dtype = torch.float16
+    M = N = K = 2048 if dtype != torch.float16 else 4096
 
     DEVICE = torch.device('cuda:0')
     properties = driver.active.utils.get_device_properties(DEVICE.index)
     NUM_SM = properties["multiprocessor_count"]
 
-    A = torch.randn((M,K), dtype = dtype, device= DEVICE)
-    B = torch.randn((K,N), dtype = dtype, device= DEVICE)
+    A = torch.randn((M,K), dtype = torch.float16, device= DEVICE)
+    B = torch.randn((K,N), dtype = torch.float16, device= DEVICE)
     C = torch.empty((M,N), dtype=torch.float16, device=DEVICE)
-    
     ref_out = torch.matmul(A,B)
+    
+    A = A.to(dtype)
+    B = B.to(dtype)
+    C = C.to(dtype)
     tr_out = matmul_kernel(A,B,C, NUM_SM)
 
-    print(f"correct? : {torch.allclose(tr_out, ref_out, atol=1e-1)}")
-    print(f"dist : {torch.dist(tr_out, ref_out)}")
+    correct = torch.allclose(tr_out.to(torch.float16), ref_out, atol=1e-1)
+    dist = torch.dist(tr_out.to(torch.float16), ref_out)
+    mdist = torch.max(torch.abs((tr_out.to(torch.float16) - ref_out)))
+    print(f"correct? : {correct} | dist : {dist} | max dist : {mdist}")
+    
+    
 
 
 @triton.testing.perf_report(
@@ -148,9 +156,9 @@ def benchmark(N, provider):
     M = K = N 
     device = torch.device('cuda:0')
     dtype = torch.float16
-    A = torch.randn(size = (M, K), device=device, dtype=dtype)
-    B = torch.randn(size = (K, N), device=device, dtype=dtype)
-    C = torch.empty((M,N), dtype=torch.float16, device='cuda')
+    A = torch.randn((M,K), dtype = torch.float16, device= device)
+    B = torch.randn((K,N), dtype = torch.float16, device= device)
+    C = torch.empty((M,N), dtype=torch.float16, device=device)
     
     DEVICE = torch.device('cuda:0')
     properties = driver.active.utils.get_device_properties(DEVICE.index)
@@ -161,15 +169,19 @@ def benchmark(N, provider):
 
     if provider == 'torch':
         ms = triton.testing.do_bench(lambda: torch.matmul(A,B))
-    
+
+    A = A.to(dtype)
+    B = B.to(dtype)
+    C = C.to(dtype)
+
     if provider == 'triton':
         ms = triton.testing.do_bench(lambda: matmul_kernel(A,B,C, NUM_SM))
     gbps = lambda ms: ((2*N**3 - N**2)/1e9)/ (ms*1e-3)
-    gbps = lambda ms: ms
 
     return gbps(ms)
 
 if __name__ == "__main__":
+    
     benchmark.run(show_plots=True, print_data=True)
 
     test()
