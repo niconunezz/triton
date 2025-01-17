@@ -4,15 +4,33 @@ import triton.language as tl
 from triton.runtime import driver
 
 
+@triton.autotune(
+    configs=[
+        triton.Config(
+            {
+                "Br": 64,
+                "Bc": 256,
+                "Bk": 64,
+                "GROUP_SZE": 8,
+            },
+            num_stages=3,
+            num_warps=8,
+        ),
+    ],
+    key=["M", "N", "K"],
+)
+
+
+
 
 @triton.jit
 def persistent(A, B, C,
                am_stride,
                bk_stride,
                cm_stride,
-               NUM_SM: tl.constexpr,
-               Br: tl.constexpr, Bc: tl.constexpr,Bk: tl.constexpr,
+               NUM_SM: tl.constexpr,             
                M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+               Br: tl.constexpr, Bc: tl.constexpr,Bk: tl.constexpr,
                GROUP_SZE: tl.constexpr):
     
     tile_id = tl.program_id(0)
@@ -78,18 +96,15 @@ def matmul_kernel(A, B, C, NUM_SM):
     M,K = A.shape
     K,N = B.shape
     
-    Br = 64
-    Bc = 128
-    Bk = 64
+    
     GROUP_SZE = 8
-
-    persistent[(min(NUM_SM, triton.cdiv(M,Br) * triton.cdiv(N, Bc)), )](A, B, C,
+    grid = lambda META: (min(NUM_SM, triton.cdiv(M,META['Br']) * triton.cdiv(N, META['Bc'])), )
+    persistent[grid](A, B, C,
                            A.stride(0),
                            B.stride(0),
                            C.stride(0),
-                           NUM_SM, Br, Bc, Bk,
-                           M, N, K, GROUP_SZE
-                          ,num_stages = 4, num_warps = 8)
+                           NUM_SM,
+                           M, N, K)
     
     return C
     
