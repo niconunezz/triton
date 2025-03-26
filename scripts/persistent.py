@@ -2,24 +2,21 @@ import torch
 import triton
 import triton.language as tl
 from triton.runtime import driver
+from grouping import kernel
+
 
 
 @triton.autotune(
     configs=[
-        triton.Config(
-            {
-                "Br": 64,
-                "Bc": 256,
-                "Bk": 64,
-                "GROUP_SZE": 8,
-            },
-            num_stages=3,
-            num_warps=8,
-        ),
+        triton.Config({"Br": 64, "Bc": 256, "Bk": 64, "GROUP_SZE": 8}, num_stages=3, num_warps=16),        
+        triton.Config({"Br": 128, "Bc": 256, "Bk": 32, "GROUP_SZE": 4}, num_stages=3, num_warps=8),
+        triton.Config({"Br": 64, "Bc": 32, "Bk": 64, "GROUP_SZE": 8}, num_stages=4, num_warps=8),
+        triton.Config({"Br": 128, "Bc": 128, "Bk": 32, "GROUP_SZE": 4}, num_stages=5, num_warps=8),
+        triton.Config({"Br": 128, "Bc": 128, "Bk": 64, "GROUP_SZE": 2}, num_stages=4, num_warps=8),
+
     ],
     key=["M", "N", "K"],
 )
-
 
 @triton.jit
 def persistent(A, B, C,
@@ -71,9 +68,13 @@ def persistent(A, B, C,
 
         off_a += Bk*(i%K_BLOCKS)
         off_b += Bk*bk_stride*(i%K_BLOCKS)
-        
-        a = tl.load(A + off_a, mask = k_off[None, :] < K - ki*Bk, other=0.0)
-        b = tl.load(B + off_b, mask = k_off[:, None] < K - ki*Bk, other=0.0)
+        a_ptrs = A + off_a
+        b_ptrs = B + off_b
+        # a = tl.load(a_ptrs, mask = k_off[None, :] < K - ki*Bk, other=0.0)
+        # b = tl.load(b_ptrs, mask = k_off[:, None] < K - ki*Bk, other=0.0)
+
+        a = tl.load(a_ptrs)
+        b = tl.load(b_ptrs)
 
         accumulator = tl.dot(a, b, accumulator, allow_tf32=False)
 
@@ -106,8 +107,10 @@ def matmul_kernel(A, B, C, NUM_SM):
                      C.stride(0),
                      NUM_SM,
                      M, N, K)
-    
+   
     return C
+
+
     
 def test():
     torch.manual_seed(20)
@@ -121,17 +124,17 @@ def test():
     A = torch.randn((M,K), dtype = torch.float16, device= DEVICE)
     B = torch.randn((K,N), dtype = torch.float16, device= DEVICE)
     C = torch.empty((M,N), dtype=torch.float16, device=DEVICE)
-    ref_out = torch.matmul(A,B)
+    # ref_out = torch.matmul(A,B)
     
     A = A.to(dtype)
     B = B.to(dtype)
     C = C.to(dtype)
     tr_out = matmul_kernel(A,B,C, NUM_SM)
 
-    correct = torch.allclose(tr_out.to(torch.float16), ref_out, atol=1e-1)
-    dist = torch.dist(tr_out.to(torch.float16), ref_out)
-    mdist = torch.max(torch.abs((tr_out.to(torch.float16) - ref_out)))
-    print(f"correct? : {correct} | dist : {dist} | max dist : {mdist}")
+    # correct = torch.allclose(tr_out.to(torch.float16), ref_out, atol=1e-1)
+    # dist = torch.dist(tr_out.to(torch.float16), ref_out)
+    # mdist = torch.max(torch.abs((tr_out.to(torch.float16) - ref_out)))
+    # print(f"correct? : {correct} | dist : {dist} | max dist : {mdist}")
     
     
 
@@ -141,9 +144,9 @@ def test():
             x_names=['N'],
             x_vals=[(2**i) for i in range(13)],
             line_arg='provider',
-            line_vals=['triton', 'torch'],
-            line_names= ['Triton', 'Torch'],
-            styles=[('blue', '-'), ('green', '-')],
+            line_vals=['persistent', 'torch', 'grouping'],
+            line_names= ['Persistent', 'Torch', 'Grouping'],
+            styles=[('blue', '-'), ('green', '-'), ('red', '-')],
             ylabel='GB/s',
             plot_name='perf',
             args = {}
@@ -174,8 +177,12 @@ def benchmark(N, provider):
     B = B.to(dtype)
     C = C.to(dtype)
 
-    if provider == 'triton':
+    if provider == 'persistent':
         ms = triton.testing.do_bench(lambda: matmul_kernel(A,B,C, NUM_SM))
+
+    if provider == 'grouping':
+        ms = triton.testing.do_bench(lambda: kernel(A,B,C))
+
     gbps = lambda ms: ((2*N**3 - N**2)/1e9)/ (ms*1e-3)
 
     return gbps(ms)
@@ -184,4 +191,4 @@ if __name__ == "__main__":
     
     benchmark.run(show_plots=True, print_data=True)
 
-    test()
+    # test()

@@ -8,10 +8,12 @@ import random
 @triton.autotune(
     configs=[
 
-        triton.Config({"Br": 128, "Bc": 256, "Bk": 32, "GROUP_SZE_M": 4}, num_stages=3, num_warps=8),
+        # triton.Config({"Br": 128, "Bc": 256, "Bk": 32, "GROUP_SZE_M": 4}, num_stages=3, num_warps=8),
+        # triton.Config({"Br": 16, "Bc": 16, "Bk": 16, "GROUP_SZE_M": 1}, num_stages=3, num_warps=8),
+
         triton.Config({"Br": 64, "Bc": 32, "Bk": 64, "GROUP_SZE_M": 8}, num_stages=4, num_warps=8),
-        triton.Config({"Br": 128, "Bc": 128, "Bk": 32, "GROUP_SZE_M": 4}, num_stages=5, num_warps=8),
-        triton.Config({"Br": 128, "Bc": 128, "Bk": 64, "GROUP_SZE_M": 2}, num_stages=4, num_warps=8),
+        # triton.Config({"Br": 128, "Bc": 128, "Bk": 32, "GROUP_SZE_M": 4}, num_stages=5, num_warps=8),
+        # triton.Config({"Br": 128, "Bc": 128, "Bk": 64, "GROUP_SZE_M": 2}, num_stages=4, num_warps=8),
   
     ],
     key=["M", "N", "K"],
