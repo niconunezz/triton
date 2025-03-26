@@ -1,4 +1,3 @@
-# triton
+# triton kernels
 
-![](assets/triton.jpg)
-Just a collection of triton kernels.
+Just a collection of triton kernels, unmaintained ;) .
